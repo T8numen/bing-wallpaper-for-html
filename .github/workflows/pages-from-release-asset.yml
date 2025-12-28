@@ -21,7 +21,33 @@ jobs:
       - name: Download lockscreen.html from release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
+          set -e
           mkdir -p site
-          gh release download "$TAG" --pattern "lockscreen.html" --dir site --
+
+          # 手动触发时 github.event.release 为空：取 latest release 的 tag
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release view --json tagName -q .tagName)"
+          fi
+
+          gh release download "$TAG" --pattern "lockscreen.html" --dir site --clobber
+          mv site/lockscreen.html site/index.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
