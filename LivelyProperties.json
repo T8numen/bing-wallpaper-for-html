@@ -1,0 +1,19 @@
+{
+  "refreshInterval": {
+    "type": "dropdown",
+    "text": "定时换图",
+    "value": 2,
+    "items": ["1 分钟", "10 分钟", "30 分钟", "60 分钟", "300 分钟"]
+  },
+  "resolutionMode": {
+    "type": "dropdown",
+    "text": "壁纸分辨率",
+    "value": 1,
+    "items": ["1080P", "UHD"]
+  },
+  "randomWallpaper": {
+    "type": "checkbox",
+    "text": "随机壁纸",
+    "value": false
+  }
+}

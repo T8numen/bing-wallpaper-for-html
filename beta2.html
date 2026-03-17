@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>Windows 锁屏</title>
+    <style>
+      :root {
+        --text-color: #f6f7f9;
+        --shadow-color: rgba(0, 0, 0, 0.45);
+        --veil-color: rgba(0, 0, 0, 0.25);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: #0d1117;
+        color: var(--text-color);
+      }
+
+      .wallpaper {
+        position: fixed;
+        inset: 0;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: cover;
+        transform: translateZ(0);
+      }
+
+      .veil {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(0, 0, 0, 0.15), var(--veil-color));
+      }
+
+      .clock {
+        position: fixed;
+        right: clamp(32px, 6vw, 96px);
+        top: clamp(40px, 8vh, 120px);
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 12px;
+        text-shadow: 0 12px 30px var(--shadow-color);
+      }
+
+      .time {
+        font-size: clamp(64px, 12vw, 140px);
+        font-weight: 600;
+        letter-spacing: 2px;
+      }
+
+      .date {
+        font-size: clamp(20px, 2.8vw, 28px);
+        font-weight: 400;
+      }
+
+      .credit {
+        position: fixed;
+        right: 24px;
+        bottom: 72px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.75);
+        text-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      }
+
+      .controls {
+        position: fixed;
+        right: clamp(16px, 4vw, 32px);
+        bottom: clamp(16px, 4vh, 28px);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(12px);
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.85);
+        text-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      }
+
+      .controls button {
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: inherit;
+        padding: 4px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        outline: none;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+      }
+
+      .controls button {
+        cursor: pointer;
+      }
+
+      .interval-display {
+        font-size: 12px;
+        white-space: nowrap;
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wallpaper" id="wallpaper" aria-hidden="true"></div>
+    <div class="veil" aria-hidden="true"></div>
+    <main class="clock">
+      <div class="time" id="time">00:00</div>
+      <div class="date" id="date">加载中...</div>
+    </main>
+    <div class="credit" id="credit"></div>
+    <div class="controls">
+      <button type="button" id="random-wallpaper">随机壁纸</button>
+      <div class="interval-display" id="interval-display">定时换图：30 分钟</div>
+    </div>
+    <script>
+      const timeEl = document.getElementById("time");
+      const dateEl = document.getElementById("date");
+      const wallpaperEl = document.getElementById("wallpaper");
+      const creditEl = document.getElementById("credit");
+      const intervalDisplay = document.getElementById("interval-display");
+      const randomButton = document.getElementById("random-wallpaper");
+      const intervalOptions = [1, 10, 30, 60, 300];
+      const resolutionOptions = ["1080", "uhd"];
+      const retryDelayMs = 5000;
+      const primaryFailureThreshold = 5;
+      const fallbackProviders = [
+        {
+          id: "biturl",
+          label: "bing.biturl.top",
+          requestUrl:
+            "https://bing.biturl.top/?resolution=UHD&format=json&index=random&mkt=zh-CN",
+          parse(payload) {
+            return {
+              imageUrl: normalizeImageUrl(payload && payload.url),
+              copyright:
+                payload && typeof payload.copyright === "string"
+                  ? payload.copyright
+                  : "",
+            };
+          },
+        },
+        {
+          id: "jasonzeng",
+          label: "bingw.jasonzeng.dev",
+          requestUrl:
+            "https://bingw.jasonzeng.dev/?resolution=UHD&format=json&index=random",
+          parse(payload) {
+            const directUrl =
+              payload && typeof payload.url === "string" ? payload.url : "";
+            const urlbase =
+              payload && typeof payload.urlbase === "string"
+                ? `https://www.bing.com${payload.urlbase}_UHD.jpg`
+                : "";
+            return {
+              imageUrl: normalizeImageUrl(directUrl || urlbase),
+              copyright:
+                payload && typeof payload.copyright === "string"
+                  ? payload.copyright
+                  : payload && typeof payload.title === "string"
+                    ? payload.title
+                    : "",
+            };
+          },
+        },
+      ];
+      let refreshTimer = null;
+      let retryTimer = null;
+      let wallpaperLoadToken = 0;
+      let currentWallpaperMode = "daily";
+      let resolutionMode = "auto";
+      let activeSourceType = "primary";
+      let primaryFailureCount = 0;
+      let fallbackProviderIndex = 0;
+
+      function updateClock() {
+        const now = new Date();
+        const timeText = now.toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+        const dateText = now.toLocaleDateString("zh-CN", {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        });
+
+        timeEl.textContent = timeText;
+        dateEl.textContent = dateText;
+      }
+
+      function resolveResolution() {
+        if (resolutionMode === "1080") {
+          return "1080";
+        }
+        if (resolutionMode === "uhd") {
+          return "uhd";
+        }
+        const shortSide =
+          Math.min(window.screen.width, window.screen.height) *
+          window.devicePixelRatio;
+        return shortSide <= 1080 ? "1080" : "uhd";
+      }
+
+      function getPrimaryWallpaperEndpoint(mode) {
+        const resolution = resolveResolution();
+        if (mode === "random") {
+          return resolution === "1080"
+            ? "https://bing.img.run/rand.php"
+            : "https://bing.img.run/rand_uhd.php";
+        }
+        return resolution === "1080"
+          ? "https://bing.img.run/1920x1080.php"
+          : "https://bing.img.run/uhd.php";
+      }
+
+      function getResolutionLabel() {
+        return resolveResolution() === "1080" ? "1080P" : "UHD";
+      }
+
+      function cacheBustUrl(url) {
+        const separator = url.includes("?") ? "&" : "?";
+        return `${url}${separator}t=${Date.now()}`;
+      }
+
+      function normalizeImageUrl(url) {
+        if (typeof url !== "string" || !url.trim()) {
+          return "";
+        }
+        try {
+          return new URL(url, "https://www.bing.com").href;
+        } catch (_error) {
+          return url;
+        }
+      }
+
+      function getActiveFallbackProvider() {
+        return fallbackProviders[fallbackProviderIndex] || null;
+      }
+
+      function rotateFallbackProvider() {
+        if (fallbackProviders.length <= 1) {
+          return;
+        }
+        fallbackProviderIndex =
+          (fallbackProviderIndex + 1) % fallbackProviders.length;
+      }
+
+      function clearRetryTimer() {
+        if (retryTimer) {
+          clearTimeout(retryTimer);
+          retryTimer = null;
+        }
+      }
+
+      function scheduleWallpaperRetry() {
+        clearRetryTimer();
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          loadWallpaper(currentWallpaperMode);
+        }, retryDelayMs);
+      }
+
+      function preloadImage(url, loadToken) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.referrerPolicy = "no-referrer";
+          img.onload = () => {
+            if (loadToken !== wallpaperLoadToken) {
+              reject(new Error("stale-load"));
+              return;
+            }
+            resolve(url);
+          };
+          img.onerror = () => {
+            if (loadToken !== wallpaperLoadToken) {
+              reject(new Error("stale-load"));
+              return;
+            }
+            reject(new Error("image-load-failed"));
+          };
+          img.src = url;
+        });
+      }
+
+      async function fetchJsonWithTimeout(url, timeoutMs) {
+        const controller =
+          typeof AbortController !== "undefined"
+            ? new AbortController()
+            : null;
+        let timeoutId = null;
+
+        try {
+          if (controller) {
+            timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+          }
+          const response = await fetch(url, {
+            cache: "no-store",
+            signal: controller ? controller.signal : undefined,
+          });
+          if (!response.ok) {
+            throw new Error(`http-${response.status}`);
+          }
+          return response.json();
+        } finally {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+          }
+        }
+      }
+
+      async function resolvePrimaryWallpaper(mode, loadToken) {
+        const requestUrl = cacheBustUrl(getPrimaryWallpaperEndpoint(mode));
+        await preloadImage(requestUrl, loadToken);
+        const kind = mode === "random" ? "随机" : "每日";
+        return {
+          imageUrl: requestUrl,
+          sourceLabel: `bing.img.run ${getResolutionLabel()} ${kind}`,
+          copyright: "",
+        };
+      }
+
+      async function resolveFallbackWallpaper(loadToken) {
+        const provider = getActiveFallbackProvider();
+        if (!provider) {
+          throw new Error("no-fallback-provider");
+        }
+        const payload = await fetchJsonWithTimeout(
+          cacheBustUrl(provider.requestUrl),
+          10000
+        );
+        if (loadToken !== wallpaperLoadToken) {
+          throw new Error("stale-load");
+        }
+        const wallpaper = provider.parse(payload);
+        if (!wallpaper.imageUrl) {
+          throw new Error("missing-image-url");
+        }
+        const imageUrl = cacheBustUrl(wallpaper.imageUrl);
+        await preloadImage(imageUrl, loadToken);
+        return {
+          imageUrl,
+          sourceLabel: `${provider.label} 4K 随机`,
+          copyright: wallpaper.copyright || "",
+        };
+      }
+
+      function buildCreditText(wallpaper) {
+        return [wallpaper.sourceLabel, wallpaper.copyright]
+          .filter(Boolean)
+          .join(" | ");
+      }
+
+      function ensureFallbackBackground() {
+        if (!wallpaperEl.style.backgroundImage) {
+          wallpaperEl.style.backgroundImage =
+            "linear-gradient(140deg, #1b2735 0%, #2a3a4f 50%, #0f1a24 100%)";
+        }
+      }
+
+      function handleWallpaperFailure() {
+        ensureFallbackBackground();
+
+        if (activeSourceType === "primary") {
+          primaryFailureCount += 1;
+          if (
+            primaryFailureCount >= primaryFailureThreshold &&
+            fallbackProviders.length > 0
+          ) {
+            activeSourceType = "fallback";
+            fallbackProviderIndex = 0;
+            const provider = getActiveFallbackProvider();
+            creditEl.textContent = `主源连续失败 ${primaryFailureThreshold} 次，切换到 ${provider.label} 4K 随机`;
+          } else {
+            creditEl.textContent = `主源加载失败（${primaryFailureCount}/${primaryFailureThreshold}），5 秒后重试`;
+          }
+        } else {
+          const failedProvider = getActiveFallbackProvider();
+          rotateFallbackProvider();
+          const nextProvider = getActiveFallbackProvider();
+          if (
+            failedProvider &&
+            nextProvider &&
+            failedProvider.id !== nextProvider.id
+          ) {
+            creditEl.textContent = `${failedProvider.label} 加载失败，5 秒后切换到 ${nextProvider.label}`;
+          } else if (failedProvider) {
+            creditEl.textContent = `${failedProvider.label} 加载失败，5 秒后重试`;
+          } else {
+            creditEl.textContent = "备用壁纸源加载失败，5 秒后重试";
+          }
+        }
+
+        scheduleWallpaperRetry();
+      }
+
+      async function loadWallpaper(mode) {
+        currentWallpaperMode = mode;
+        clearRetryTimer();
+        const loadToken = ++wallpaperLoadToken;
+
+        try {
+          const wallpaper =
+            activeSourceType === "primary"
+              ? await resolvePrimaryWallpaper(mode, loadToken)
+              : await resolveFallbackWallpaper(loadToken);
+
+          if (loadToken !== wallpaperLoadToken) {
+            return;
+          }
+
+          wallpaperEl.style.backgroundImage = `url("${wallpaper.imageUrl}")`;
+          if (activeSourceType === "primary") {
+            primaryFailureCount = 0;
+          }
+          creditEl.textContent = buildCreditText(wallpaper);
+        } catch (error) {
+          if (loadToken !== wallpaperLoadToken) {
+            return;
+          }
+          if (error && error.message === "stale-load") {
+            return;
+          }
+          handleWallpaperFailure();
+        }
+      }
+
+      function setRefreshTimer(minutes) {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+        if (Number.isFinite(minutes) && minutes > 0) {
+          refreshTimer = setInterval(
+            () => loadWallpaper("random"),
+            minutes * 60 * 1000
+          );
+        }
+      }
+
+      function updateIntervalDisplay(minutes) {
+        intervalDisplay.textContent = `定时换图：${minutes} 分钟`;
+      }
+
+      function applyRefreshInterval(minutes) {
+        if (!Number.isFinite(minutes) || minutes <= 0) {
+          return;
+        }
+        if (!intervalOptions.includes(minutes)) {
+          return;
+        }
+        updateIntervalDisplay(minutes);
+        setRefreshTimer(minutes);
+      }
+
+      function parseMinutes(value) {
+        const parsed = Number.parseInt(String(value).replace(/[^\d]/g, ""), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      function applyRefreshIntervalFromLively(value) {
+        const index = Number.parseInt(value, 10);
+        if (Number.isInteger(index) && intervalOptions[index] !== undefined) {
+          applyRefreshInterval(intervalOptions[index]);
+          return;
+        }
+        const minutes = parseMinutes(value);
+        if (minutes !== null) {
+          applyRefreshInterval(minutes);
+        }
+      }
+
+      function applyResolutionFromLively(value) {
+        const index = Number.parseInt(value, 10);
+        if (
+          Number.isInteger(index) &&
+          resolutionOptions[index] !== undefined
+        ) {
+          resolutionMode = resolutionOptions[index];
+          loadWallpaper(currentWallpaperMode);
+          return;
+        }
+        if (typeof value === "string") {
+          const lower = value.toLowerCase();
+          if (lower.includes("1080")) {
+            resolutionMode = "1080";
+          } else if (lower.includes("uhd")) {
+            resolutionMode = "uhd";
+          } else {
+            return;
+          }
+          loadWallpaper(currentWallpaperMode);
+        }
+      }
+
+      updateClock();
+      loadWallpaper("daily");
+      applyRefreshInterval(intervalOptions[2]);
+      setInterval(updateClock, 1000);
+
+      randomButton.addEventListener("click", () => {
+        loadWallpaper("random");
+      });
+
+      window.livelyPropertyListener = (name, value) => {
+        if (name === "refreshInterval") {
+          applyRefreshIntervalFromLively(value);
+          return;
+        }
+        if (name === "resolutionMode") {
+          applyResolutionFromLively(value);
+          return;
+        }
+        if (name === "randomWallpaper") {
+          if (
+            value === true ||
+            value === "true" ||
+            value === 1 ||
+            value === "1"
+          ) {
+            loadWallpaper("random");
+          }
+        }
+      };
+    </script>
+  </body>
+</html>

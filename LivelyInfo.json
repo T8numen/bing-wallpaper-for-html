@@ -1,0 +1,17 @@
+{
+  "AppVersion": "1.0.1.0",
+  "Title": "livelywallpaper适配版-v5.2",
+  "Thumbnail": "b2iibpp2.sic.jpg",
+  "Preview": "mouw2ob0.oiu.gif",
+  "Desc": "适配livelywallpaper，支持主源失败5次后切换第三方4K随机壁纸源",
+  "Author": "T8numen",
+  "License": null,
+  "Contact": "https://github.com/T8numen/bing-wallpaper-for-html/releases/tag/v5.2-lively",
+  "Type": 1,
+  "FileName": "beta2.html",
+  "Arguments": null,
+  "IsAbsolutePath": false,
+  "Id": null,
+  "Tags": null,
+  "Version": 0
+}
